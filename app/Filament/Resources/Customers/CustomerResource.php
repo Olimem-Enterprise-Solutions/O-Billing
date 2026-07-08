@@ -6,13 +6,16 @@ use App\Filament\Resources\Customers\Pages\ManageCustomers;
 use App\Models\Area;
 use App\Models\Customer;
 use App\Models\Service;
+use App\Services\Sage\SagePropertyWriter;
 use App\Support\Currencies;
 use BackedEnum;
+use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Facades\Filament;
+use Filament\Notifications\Notification;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -154,6 +157,7 @@ class CustomerResource extends Resource
             ])
             ->recordActions([
                 EditAction::make(),
+                self::pushToSageAction(),
                 DeleteAction::make(),
             ])
             ->toolbarActions([
@@ -161,6 +165,39 @@ class CustomerResource extends Resource
                     DeleteBulkAction::make(),
                 ]),
             ]);
+    }
+
+    /**
+     * Create this property (and its owner debtor, if new) in the Sage database so
+     * it shows up in Sage. Writes to the configured write database — the test
+     * company by default.
+     */
+    private static function pushToSageAction(): Action
+    {
+        return Action::make('pushToSage')
+            ->label('Send to Sage')
+            ->icon(Heroicon::OutlinedArrowUpTray)
+            ->color('gray')
+            ->requiresConfirmation()
+            ->modalHeading('Send property to Sage')
+            ->modalDescription(fn (): string => 'Creates this property (and its owner, if not already in Sage) in "'
+                .config('database.connections.sage_write.database').'", so it appears in the Sage property list.')
+            ->modalSubmitActionLabel('Send to Sage')
+            ->action(function (Customer $record): void {
+                $result = app(SagePropertyWriter::class)->pushProperty($record->load(['area', 'services']));
+
+                if (! ($result['ok'] ?? false)) {
+                    Notification::make()->danger()->title('Could not send to Sage')
+                        ->body($result['error'] ?? 'Unknown error')->persistent()->send();
+
+                    return;
+                }
+
+                $owner = $result['owner_created'] ? 'new owner created' : 'linked to existing owner';
+                Notification::make()->success()->title('Property created in Sage')
+                    ->body("Erf {$result['erf']} added to \"{$result['database']}\" — property #{$result['property_id']}, {$owner}, {$result['services']} service(s) linked.")
+                    ->persistent()->send();
+            });
     }
 
     public static function getPages(): array

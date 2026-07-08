@@ -9,12 +9,14 @@ use Filament\Facades\Filament;
 use Filament\Widgets\ChartWidget;
 
 /**
- * Revenue by suburb (base currency) — where the money is coming from. Limited to
- * the top suburbs so the chart stays readable.
+ * Where the money comes from: the top suburbs by revenue (base currency), as a
+ * horizontal bar so the suburb names stay readable.
  */
 class RevenueBySuburb extends ChartWidget
 {
-    protected ?string $heading = 'Top suburbs by revenue (base currency)';
+    protected ?string $heading = 'Top suburbs by revenue';
+
+    protected static ?int $sort = 4;
 
     protected function getType(): string
     {
@@ -23,7 +25,7 @@ class RevenueBySuburb extends ChartWidget
 
     protected function getData(): array
     {
-        $base = Filament::getTenant()?->base_currency ?? 'ZAR';
+        $base = Filament::getTenant()?->base_currency ?? 'USD';
 
         $rows = Invoice::query()
             ->where('invoices.currency', $base)
@@ -39,10 +41,24 @@ class RevenueBySuburb extends ChartWidget
             'datasets' => [[
                 'label' => 'Billed ('.$base.')',
                 'data' => $rows->map(fn ($t) => round((float) $t, 2))->values()->all(),
-                'backgroundColor' => '#34d399',
+                'backgroundColor' => '#10b981',
                 'borderColor' => '#059669',
+                'borderRadius' => 6,
             ]],
             'labels' => $rows->keys()->all(),
+        ];
+    }
+
+    protected function getOptions(): array
+    {
+        return [
+            'indexAxis' => 'y',
+            'maintainAspectRatio' => false,
+            'plugins' => ['legend' => ['display' => false]],
+            'scales' => [
+                'x' => ['beginAtZero' => true, 'grid' => ['color' => 'rgba(148,163,184,0.15)']],
+                'y' => ['grid' => ['display' => false]],
+            ],
         ];
     }
 }

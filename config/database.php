@@ -114,6 +114,46 @@ return [
             // 'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', 'false'),
         ],
 
+        /*
+         * Read-only source: the Sage Evolution (CCG Enterprise Billing) company
+         * database on the local SQL Server Express instance. Uses Windows
+         * (trusted) auth when username/password are left blank. Consumed by the
+         * Sage\* read-only models and the `sage:import` command — never migrated.
+         */
+        'sage' => [
+            'driver' => 'sqlsrv',
+            'host' => env('SAGE_DB_HOST', '.\SQLEXPRESS'),
+            'port' => env('SAGE_DB_PORT') ?: null,
+            'database' => env('SAGE_DB_DATABASE', 'Plumtree Town Council NCOA'),
+            'username' => env('SAGE_DB_USERNAME') ?: null,
+            'password' => env('SAGE_DB_PASSWORD') ?: null,
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'encrypt' => env('SAGE_DB_ENCRYPT', 'no'),
+            'trust_server_certificate' => env('SAGE_DB_TRUSTED', true),
+        ],
+
+        /*
+         * Write target for pushing charges back to Sage (ad-hoc billing staging).
+         * Defaults to the NON-PRODUCTION test company so write-back is safe until
+         * SAGE_WRITE_DATABASE is deliberately pointed at the live database. Same
+         * host/auth as the read connection.
+         */
+        'sage_write' => [
+            'driver' => 'sqlsrv',
+            'host' => env('SAGE_DB_HOST', '.\SQLEXPRESS'),
+            'port' => env('SAGE_DB_PORT') ?: null,
+            'database' => env('SAGE_WRITE_DATABASE', 'Plumtree Town Council NCOA_TEST'),
+            'username' => env('SAGE_DB_USERNAME') ?: null,
+            'password' => env('SAGE_DB_PASSWORD') ?: null,
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'encrypt' => env('SAGE_DB_ENCRYPT', 'no'),
+            'trust_server_certificate' => env('SAGE_DB_TRUSTED', true),
+        ],
+
     ],
 
     /*

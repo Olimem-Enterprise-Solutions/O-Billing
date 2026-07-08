@@ -22,7 +22,7 @@ class Area extends Model
     use HasFactory;
 
     protected $fillable = [
-        'municipality_id', 'area_type_id', 'parent_id', 'name', 'code',
+        'municipality_id', 'area_type_id', 'parent_id', 'name', 'code', 'sage_id',
     ];
 
     public function areaType(): BelongsTo
