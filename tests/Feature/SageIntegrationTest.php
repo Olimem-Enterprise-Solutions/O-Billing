@@ -160,6 +160,25 @@ class SageIntegrationTest extends TestCase
             ->assertOk();
     }
 
+    public function test_post_to_sage_action_mounts_with_live_preview(): void
+    {
+        [$muni, $user] = $this->tenantUser();
+        $this->actingAs($user);
+        filament()->setCurrentPanel(filament()->getPanel('admin'));
+        filament()->setTenant($muni);
+
+        $run = \App\Models\BillingRun::create([
+            'municipality_id' => $muni->id, 'run_number' => 'BR-UI-TEST', 'period_month' => now()->startOfMonth(),
+            'frequency' => 'monthly', 'status' => 'completed', 'invoice_count' => 0,
+        ]);
+
+        // Mounting the action builds the confirmation modal, which runs the live
+        // dry-run preview against Sage; a resolution failure would throw here.
+        \Livewire\Livewire::test(\App\Filament\Resources\BillingRuns\Pages\ViewBillingRun::class, ['record' => $run->getRouteKey()])
+            ->mountAction('postToSage')
+            ->assertOk();
+    }
+
     public function test_billing_run_poster_preview_resolves_sage_accounts_without_writing(): void
     {
         [$muni] = $this->tenantUser();

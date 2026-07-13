@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\BillingRuns\Pages;
 
+use App\Filament\Resources\BillingRuns\Actions\PostToSageAction;
 use App\Filament\Resources\BillingRuns\BillingRunResource;
 use App\Models\BillingRun;
 use App\Services\Billing\BillingRunService;
@@ -36,6 +37,7 @@ class ViewBillingRun extends ViewRecord
                         ->body("{$result['invoice_count']} invoices generated. Total billed: ".($totals ?: '—'))
                         ->send();
                 }),
+            PostToSageAction::make(),
         ];
     }
 }

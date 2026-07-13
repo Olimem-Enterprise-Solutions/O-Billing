@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\BillingRuns\Tables;
 
+use App\Filament\Resources\BillingRuns\Actions\PostToSageAction;
 use App\Models\BillingRun;
 use App\Services\Billing\BillingRunService;
 use App\Support\Currencies;
@@ -71,6 +72,7 @@ class BillingRunsTable
                             ->body("{$result['invoice_count']} invoices generated. Total billed: ".($totals ?: '—'))
                             ->send();
                     }),
+                PostToSageAction::make(),
                 \Filament\Actions\ViewAction::make(),
                 DeleteAction::make(),
             ])
