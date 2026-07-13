@@ -26,8 +26,10 @@ class ServiceType extends Model
 
     protected $fillable = [
         'municipality_id', 'name', 'code', 'billing_basis',
-        'unit_label', 'active',
+        'default_frequency', 'unit_label', 'active',
     ];
+
+    public const FREQUENCIES = ['monthly', 'quarterly', 'annually'];
 
     protected function casts(): array
     {
