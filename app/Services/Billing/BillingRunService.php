@@ -107,9 +107,8 @@ final class BillingRunService
         $tariffs = Tariff::where('active', true)->get()
             ->keyBy(fn (Tariff $t) => $this->tariffKey($t->area_id, $t->service_id, $t->currency));
 
-        // Optional service filter (empty/null = all services) and frequency scaling.
+        // Optional service filter (empty/null = all services).
         $serviceIds = $this->serviceIdFilter($run);
-        $multiplier = $run->frequencyMultiplier();
 
         $currencyTotals = [];
         $invoices = [];
@@ -127,6 +126,21 @@ final class BillingRunService
 
                 if ($serviceIds !== null && ! in_array($service->id, $serviceIds, true)) {
                     continue; // Not in this run's selected services.
+                }
+
+                // Frequency-aware billing. A service with a set cadence is billed
+                // only by a run of that same frequency, and its tariff is the charge
+                // for that whole period (no scaling). A service with no cadence keeps
+                // the legacy behaviour: billed by any run, its monthly rate scaled up
+                // by the run's frequency (quarterly = 3 months, annually = 12).
+                $frequency = $type->default_frequency;
+                if ($frequency !== null) {
+                    if ($frequency !== $run->frequency) {
+                        continue; // Not this run's cadence.
+                    }
+                    $multiplier = 1.0;
+                } else {
+                    $multiplier = $run->frequencyMultiplier();
                 }
 
                 $tariff = $tariffs->get($this->tariffKey($customer->area_id, $service->id, $customer->currency));

@@ -295,4 +295,63 @@ class BillingEngineTest extends TestCase
             $this->assertSame('completed', $run->fresh()->status);
         });
     }
+
+    public function test_billing_is_frequency_aware_per_service(): void
+    {
+        $municipality = Municipality::create([
+            'name' => 'Freq Muni', 'code' => 'FRQ', 'base_currency' => 'USD',
+            'supported_currencies' => ['USD'], 'tax_rate' => 0.0, 'tax_label' => 'VAT',
+        ]);
+
+        app(CurrentMunicipality::class)->runFor($municipality->id, function () use ($municipality): void {
+            $suburbType = AreaType::create([
+                'municipality_id' => $municipality->id,
+                'name' => 'Suburb', 'level' => 1, 'is_billing_level' => true,
+            ]);
+            $suburb = Area::create([
+                'municipality_id' => $municipality->id, 'area_type_id' => $suburbType->id, 'name' => 'Testville',
+            ]);
+
+            // A monthly service ($5) and an annual service ($90).
+            $levyType = ServiceType::create([
+                'municipality_id' => $municipality->id, 'name' => 'Development Levy', 'code' => 'LEVY',
+                'billing_basis' => ServiceType::BASIS_FLAT, 'default_frequency' => 'monthly', 'active' => true,
+            ]);
+            $ratesType = ServiceType::create([
+                'municipality_id' => $municipality->id, 'name' => 'Assessment Rates', 'code' => 'RATES',
+                'billing_basis' => ServiceType::BASIS_FLAT, 'default_frequency' => 'annually', 'active' => true,
+            ]);
+            $levy = $levyType->ensureDefaultService(taxable: false);
+            $rates = $ratesType->ensureDefaultService(taxable: false);
+            Tariff::create(['municipality_id' => $municipality->id, 'area_id' => $suburb->id, 'service_id' => $levy->id, 'rate' => 5, 'currency' => 'USD', 'active' => true]);
+            Tariff::create(['municipality_id' => $municipality->id, 'area_id' => $suburb->id, 'service_id' => $rates->id, 'rate' => 90, 'currency' => 'USD', 'active' => true]);
+
+            $customer = Customer::create([
+                'municipality_id' => $municipality->id, 'area_id' => $suburb->id, 'account_number' => 'A1',
+                'name' => 'Ratepayer', 'type' => 'residential', 'currency' => 'USD', 'active' => true,
+            ]);
+            $customer->services()->sync([$levy->id, $rates->id]);
+
+            $billing = app(BillingRunService::class);
+            $period = now()->startOfMonth();
+
+            // A MONTHLY run bills only the monthly levy, at its face $5 (no scaling).
+            $monthly = BillingRun::create([
+                'municipality_id' => $municipality->id, 'run_number' => 'BR-M', 'period_month' => $period, 'frequency' => 'monthly',
+            ]);
+            $mResult = $billing->preview($monthly);
+            $this->assertSame(5.0, $mResult['currency_totals']['USD']);
+            $this->assertCount(1, $mResult['invoices'][0]['lines']);
+            $this->assertSame($levy->id, $mResult['invoices'][0]['lines'][0]['service_id']);
+
+            // An ANNUAL run bills only the annual rates, at face $90 (not 12x).
+            $annual = BillingRun::create([
+                'municipality_id' => $municipality->id, 'run_number' => 'BR-A', 'period_month' => $period, 'frequency' => 'annually',
+            ]);
+            $aResult = $billing->preview($annual);
+            $this->assertSame(90.0, $aResult['currency_totals']['USD']);
+            $this->assertCount(1, $aResult['invoices'][0]['lines']);
+            $this->assertSame($rates->id, $aResult['invoices'][0]['lines'][0]['service_id']);
+        });
+    }
 }
