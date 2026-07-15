@@ -143,12 +143,23 @@ final class BillingRunService
                     $multiplier = $run->frequencyMultiplier();
                 }
 
-                $tariff = $tariffs->get($this->tariffKey($customer->area_id, $service->id, $customer->currency));
-                if ($tariff === null) {
-                    continue; // No tariff for this suburb/service in the customer's currency.
-                }
+                // A per-customer charge (imported from the council's own client
+                // schedule) overrides the suburb tariff outright.
+                $override = $service->pivot->amount;
+                if ($override !== null) {
+                    $quantity = 1.0;
+                    $unitAmount = (float) $override;
+                    $amount = Money::of((string) $override, $customer->currency, roundingMode: RoundingMode::HALF_UP);
+                    $trCode = $type->code;
+                } else {
+                    $tariff = $tariffs->get($this->tariffKey($customer->area_id, $service->id, $customer->currency));
+                    if ($tariff === null) {
+                        continue; // No tariff for this suburb/service in the customer's currency.
+                    }
 
-                [$quantity, $unitAmount, $amount] = $this->lineAmount($type, $tariff, $customer);
+                    [$quantity, $unitAmount, $amount] = $this->lineAmount($type, $tariff, $customer);
+                    $trCode = $tariff->tr_code;
+                }
 
                 // Scale by the run's frequency: a quarterly run raises 3 months' charge.
                 if ($multiplier !== 1.0) {
@@ -169,7 +180,7 @@ final class BillingRunService
 
                 $lines[] = [
                     'service_id' => $service->id,
-                    'tr_code' => $tariff->tr_code,
+                    'tr_code' => $trCode,
                     'description' => $service->displayName().' — '.$customer->area->name,
                     'quantity' => $quantity,
                     'unit_amount' => $unitAmount,

@@ -14,10 +14,10 @@ class SagePostRun extends Command
 {
     protected $signature = 'sage:post-run
         {run : The O-Billing billing run number (e.g. BR-202607-0001)}
-        {--write : Actually stage the batch in Sage (default is a dry run)}
-        {--force : Stage even if a batch for this run already exists in Sage}';
+        {--write : Actually post the invoices into Sage (default is a dry run)}
+        {--force : Post even if some of this run\'s invoices already exist in Sage}';
 
-    protected $description = 'Stage a completed billing run in Sage as an unposted debtors batch (a Sage operator reviews and posts it)';
+    protected $description = 'Post a completed billing run into Sage as posted customer invoices (documents + debtor and GL entries)';
 
     public function handle(SageBillingRunPoster $poster): int
     {
@@ -47,8 +47,8 @@ class SagePostRun extends Command
             return self::FAILURE;
         }
 
-        $this->info(($write ? 'Staging into' : 'DRY RUN against').": {$result['database']}");
-        $this->line("Batch {$result['batch_no']} (ref {$result['batch_ref']}) · tr code {$result['tr_code']} · tx date {$result['tx_date']} · rate {$result['exchange_rate']} ZWG/USD");
+        $this->info(($write ? 'Posting into' : 'DRY RUN against').": {$result['database']}");
+        $this->line("Tr code {$result['tr_code']} · tx date {$result['tx_date']} (period {$result['period_id']}) · rate {$result['exchange_rate']} ZWG/USD · numbering from {$result['next_invoice_number']}");
         $this->newLine();
 
         $rows = [];
@@ -60,14 +60,14 @@ class SagePostRun extends Command
                 number_format($t['usd_excl'], 2),
                 number_format($t['usd_tax'], 2),
                 number_format($t['usd_incl'], 2),
-                $t['contra'] !== null ? '#'.$t['contra'] : '(operator to fill)',
+                '#'.$t['revenue_account'],
             ];
             $totExcl += $t['usd_excl'];
             $totTax += $t['usd_tax'];
             $totIncl += $t['usd_incl'];
         }
-        $rows[] = ['TOTAL', number_format(count($result['lines'])), number_format($totExcl, 2), number_format($totTax, 2), number_format($totIncl, 2), ''];
-        $this->table(['Service', 'Lines', 'USD excl', 'USD tax', 'USD incl', 'Revenue GL'], $rows);
+        $rows[] = ['TOTAL', number_format(count($result['docs'])), number_format($totExcl, 2), number_format($totTax, 2), number_format($totIncl, 2), ''];
+        $this->table(['Service', 'Invoices', 'USD excl', 'USD tax', 'USD incl', 'Revenue GL'], $rows);
 
         if ($result['unresolved'] !== []) {
             $this->warn('Unresolved ('.count($result['unresolved']).'):');
@@ -78,11 +78,8 @@ class SagePostRun extends Command
                 $this->warn('  … and '.(count($result['unresolved']) - 10).' more');
             }
         }
-        if ($result['previously_posted']) {
-            $this->warn("A batch with ref {$result['batch_ref']} was ALREADY POSTED in Sage previously — staging again would double-bill once posted.");
-        }
-        if ($result['already_staged']) {
-            $this->warn("An unposted batch with ref {$result['batch_ref']} already exists in Sage.");
+        if ($result['already_posted'] > 0) {
+            $this->warn("{$result['already_posted']} invoice(s) of this run are ALREADY POSTED in Sage (e.g. {$result['already_posted_example']}).");
         }
 
         if (isset($result['error'])) {
@@ -94,12 +91,11 @@ class SagePostRun extends Command
 
         $this->newLine();
         if (! $write) {
-            $this->info('Dry run only — NOTHING was written to Sage. Re-run with --write to stage the batch.');
+            $this->info('Dry run only — NOTHING was written to Sage. Re-run with --write to post the invoices.');
         } else {
-            $this->info("Staged batch #{$result['batch_id']} ({$result['staged']} lines) — UNPOSTED.");
-            $this->line('Next, in Sage Evolution: Debtors → Transactions → Batch Entry → open batch '
-                .$result['batch_no'].' → review the lines (fill any missing GL contra) → Validate → Post.');
-            $this->line('Posting in Sage writes the double entry (debtor ↔ revenue ↔ VAT), customer statements, and the trial balance.');
+            $this->info("Posted {$result['posted']} Sage invoices ({$result['invoice_from']} … {$result['invoice_to']}).");
+            $this->line('The debtor accounts are debited, revenue and VAT credited, and customer statements,');
+            $this->line('the trial balance and account enquiries in Sage Evolution reflect the run immediately.');
         }
 
         return self::SUCCESS;

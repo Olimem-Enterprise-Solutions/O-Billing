@@ -21,39 +21,67 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Posting billing runs back to Sage (AR batches)
+    | Posting billing runs to Sage (direct invoice documents)
     |--------------------------------------------------------------------------
     |
-    | `sage:post-run` stages a completed O-Billing billing run as an UNPOSTED
-    | Sage Evolution debtors batch (_etblARAPBatches + _etblARAPBatchLines) on
-    | the `sage_write` connection. A Sage operator then reviews and posts the
-    | batch inside Evolution, so Sage's own engine writes the double entry
-    | (PostAR/PostGL/tax) and the books stay balanced.
+    | `sage:post-run` posts a completed O-Billing billing run straight into
+    | Sage Evolution as POSTED customer invoices: an InvNum document (plus
+    | lines) per charge, with the matching PostAR debtor transaction and the
+    | balanced PostGL double entry (debtors control ↔ revenue ↔ VAT), exactly
+    | replicating what Evolution's own Invoice Maintenance posting writes.
     |
-    | - invoice_tr_code: the AR transaction type used for the debit lines. Its
-    |   TrCode carries the debtors-control and tax accounts.
-    | - revenue_accounts: GL account CODE credited per ledger service token
-    |   (the contra on each line). Tokens without a mapping are staged with no
-    |   contra and flagged, so the operator fills them in the batch grid.
-    | - tax_type_id: the Sage output-tax type applied to lines that carry tax.
+    | The GL wiring is resolved live from Sage itself:
+    |   debtors control + VAT control  ← the client's class (CliClass)
+    |   revenue account                ← the service item's inventory group
+    |   invoice tr code + numbering    ← inventory defaults (StDfTbl)
+    |
+    | - class_items: the Sage service item (StkItem code) billed per client
+    |   class, from the council's price-list schedule. A client whose class has
+    |   no mapping is reported and skipped.
+    | - tax_type_id / exempt_tax_type_id: output-tax types for taxed lines and
+    |   exempt lines (the council bills its levies/licences exempt).
     | - currency_id: the Sage currency of the debtor accounts (USD).
+    | - agent_id / username: recorded as the posting operator.
     |
     */
 
     'posting' => [
-        'batch_prefix' => 'OB',
-        'invoice_tr_code' => env('SAGE_POST_TRCODE', 'IN-P1SP4'),
         'tax_type_id' => (int) env('SAGE_POST_TAXTYPE', 1), // Output Tax 15.5%
+        'exempt_tax_type_id' => (int) env('SAGE_POST_EXEMPT_TAXTYPE', 7), // Exempt 0%
         'currency_id' => (int) env('SAGE_POST_CURRENCY', 1), // USD
-        'revenue_accounts' => [
-            'ASSR' => 'P1SP4-1131000004', // Assessment rates - Residential
-            'ASS' => 'P1SP4-1131000004',
-            'DEVC' => 'P1SP4-1131000008', // Development Levy - Communal
-            'DEVR' => 'P1SP4-1131000010', // Development Levy - Residential
-            'DEVM' => 'P1SP4-1131000009', // Development Levy - Mines
-            'LEAR' => 'P1SP4-1415000011', // Trading Site Lease
-            'LIC' => 'P1SP4-1145210017', // Other trading licences
-            'LICR' => 'P1SP4-1145210017',
+        'agent_id' => (int) env('SAGE_POST_AGENT', 1),
+        'username' => env('SAGE_POST_USERNAME', 'O-Billing'),
+        'class_items' => [
+            1 => 'P1SP4-SVS162',  // General Dealer Licence
+            2 => 'P1SP4-SVS039',  // Liquor Licence
+            3 => 'P1SP4-SVS480',  // Land Development Levy - Commercial
+            4 => 'P1SP4-SVS304',  // Land Development Levy - Residential
+            5 => 'P1SP4-SVS650',  // Assessment Rate (low density)
+            6 => 'P1SP4-SVS407',  // Land Development Levy - Mines
+            7 => 'P3SP3-SVS357',  // Lease Rent
+            8 => 'P1SP4-SVS078',  // Licence Renewal
+            9 => 'P1SP4-SVS171',  // Grinding Mill Licence
+            10 => 'P1SP4-SVS077', // Butchery Licence
+            11 => 'P1SP4-SVS690', // Supermarket Licence
+            12 => 'P1SP4-SVS838', // Restaurant Licence
+            13 => 'P1SP4-SVS180', // Hardware Licence
+            14 => 'P1SP4-SVS905', // Welding Shop Licence
+            15 => 'P1SP4-SVS718', // Carpentry Licence
+            16 => 'P1SP4-SVS684', // Filling Station Licence
+            18 => 'P1SP4-SVS653', // Eating House Licence
+            19 => 'P1SP4-SVS801', // Furniture Shop Licence
+            20 => 'P1SP4-SVS039', // Bottle Store (liquor licence item)
+            21 => 'P1SP4-SVS788', // Lodge Licence
+            22 => 'P1SP4-SVS176', // Hair Salon Licence
+            23 => 'P1SP4-SVS090', // Clothing Shop Licence
+            24 => 'P1SP4-SVS029', // Bakery Licence
+            25 => 'P1SP4-SVS652', // Booking House Licence
+            26 => 'P1SP4-SVS690', // Superette (supermarket item)
+            28 => 'P1SP4-SVS852', // Theme Park Licence
+            29 => 'P1SP4-SVS872', // Truckers Inn Licence
+            30 => 'P1SP4-SVS885', // Event Centre Licence
+            31 => 'P1SP4-SVS831', // Base Station (renewal item)
+            68 => 'P1SP4-SVS184', // Development Levy - Communal (per capita)
         ],
     ],
 

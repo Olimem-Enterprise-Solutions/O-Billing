@@ -217,17 +217,23 @@ class SageIntegrationTest extends TestCase
 
             $result = app(\App\Services\Sage\SageBillingRunPoster::class)->preview($run);
 
-            // The line resolved to a real Sage debtor and the mapped revenue account,
-            // amounts carried in both USD and home currency — and nothing was written.
-            $this->assertCount(1, $result['lines']);
+            // The line resolved to a real Sage debtor, class control account and
+            // service item, a balanced GL double entry was built in home currency,
+            // USD amounts carried on the document — and nothing was written.
+            $this->assertCount(1, $result['docs']);
             $this->assertSame([], $result['unresolved']);
-            $line = $result['lines'][0];
-            $this->assertGreaterThan(0, $line['iAccountID']);
-            $this->assertNotNull($line['iGLContraID']);
-            $this->assertSame(90.0, $line['fAmountExclForeign']);
-            $this->assertSame(103.95, $line['fAmountInclForeign']);
+            $doc = $result['docs'][0];
+            $this->assertGreaterThan(0, $doc['post_ar']['AccountLink']);
+            $this->assertSame(103.95, $doc['post_ar']['fForeignDebit']);
+            $this->assertSame(103.95, $doc['header']['fInvTotInclForeign']);
+            $this->assertSame(90.0, $doc['header']['fInvTotExclForeign']);
             $this->assertGreaterThan(1.0, $result['exchange_rate']);
-            $this->assertSame(1, $line['bIsDebit']);
+            $debits = array_sum(array_column($doc['post_gl'], 'Debit'));
+            $credits = array_sum(array_column($doc['post_gl'], 'Credit'));
+            $this->assertEqualsWithDelta($debits, $credits, 0.001);
+            $this->assertSame($doc['post_ar']['Debit'], $debits);
+            $this->assertSame(0, $result['already_posted']);
+            $this->assertStringStartsWith('INV', $result['next_invoice_number']);
         });
     }
 }

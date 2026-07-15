@@ -44,7 +44,8 @@ class Customer extends Model
 
     public function services(): BelongsToMany
     {
-        return $this->belongsToMany(Service::class, 'customer_service');
+        return $this->belongsToMany(Service::class, 'customer_service')
+            ->withPivot('amount');
     }
 
     public function invoices(): HasMany
