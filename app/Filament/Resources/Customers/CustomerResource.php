@@ -5,9 +5,10 @@ namespace App\Filament\Resources\Customers;
 use App\Filament\Resources\Customers\Pages\ManageCustomers;
 use App\Models\Area;
 use App\Models\Customer;
+use App\Jobs\Sage\PushProperty;
 use App\Models\Service;
-use App\Services\Sage\SagePropertyWriter;
 use App\Support\Currencies;
+use App\Support\Sage\SageBridge;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
@@ -169,10 +170,11 @@ class CustomerResource extends Resource
     }
 
     /**
-     * Create this property in the Sage database so it shows up in Sage — as a
+     * Queue this property to be created in Sage by the on-site worker — as a
      * property record when the company runs the property module, or as one
-     * debtor account per service when it keeps properties in the debtors
-     * ledger. Writes to the configured write database.
+     * debtor account per subscribed service when it keeps properties in the
+     * debtors ledger. The cloud app has no Sage connection, so the work is
+     * dispatched (see {@see PushProperty}) and reported back via a notification.
      */
     private static function pushToSageAction(): Action
     {
@@ -182,44 +184,16 @@ class CustomerResource extends Resource
             ->color('gray')
             ->requiresConfirmation()
             ->modalHeading('Send property to Sage')
-            ->modalDescription(function (): string {
-                $database = config('database.connections.sage_write.database');
-
-                return app(SagePropertyWriter::class)->targetsPropertyModule()
-                    ? "Creates this property (and its owner, if not already in Sage) in \"{$database}\", so it appears in the Sage property list."
-                    : "This Sage company keeps properties as debtor accounts. Creates one Sage debtor account per subscribed service in \"{$database}\" (e.g. STAND-DEVR-…), so the property appears in the Sage debtors ledger and can be billed.";
-            })
-            ->modalSubmitActionLabel('Send to Sage')
+            ->modalDescription('Queues this property to be created in Sage by the on-site worker — as a property record or as one debtor account per subscribed service, depending on the council\'s Sage setup. You will be notified when it completes.')
+            ->modalSubmitActionLabel('Queue send')
             ->action(function (Customer $record): void {
-                $result = app(SagePropertyWriter::class)
-                    ->pushProperty($record->load(['area', 'services.serviceType']));
+                SageBridge::queue('push_property', PushProperty::class, $record);
 
-                if (! ($result['ok'] ?? false)) {
-                    Notification::make()->danger()->title('Could not send to Sage')
-                        ->body($result['error'] ?? 'Unknown error')->persistent()->send();
-
-                    return;
-                }
-
-                if (($result['mode'] ?? null) === 'ledger') {
-                    $parts = ['Created '.implode(', ', $result['created']).' in "'.$result['database'].'".'];
-                    if ($result['existing'] !== []) {
-                        $parts[] = 'Already there: '.implode(', ', $result['existing']).'.';
-                    }
-                    if ($result['unmapped'] !== []) {
-                        $parts[] = 'No Sage account type for: '.implode(', ', $result['unmapped']).'.';
-                    }
-
-                    Notification::make()->success()->title("Property {$result['stand']} created in Sage")
-                        ->body(implode(' ', $parts))->persistent()->send();
-
-                    return;
-                }
-
-                $owner = $result['owner_created'] ? 'new owner created' : 'linked to existing owner';
-                Notification::make()->success()->title('Property created in Sage')
-                    ->body("Erf {$result['erf']} added to \"{$result['database']}\" — property #{$result['property_id']}, {$owner}, {$result['services']} service(s) linked.")
-                    ->persistent()->send();
+                Notification::make()
+                    ->success()
+                    ->title('Send to Sage queued')
+                    ->body('The property has been queued to be created in Sage. Watch progress under Sage → Sage Operations.')
+                    ->send();
             });
     }
 
