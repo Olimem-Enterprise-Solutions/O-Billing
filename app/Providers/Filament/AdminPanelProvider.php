@@ -31,6 +31,8 @@ class AdminPanelProvider extends PanelProvider
             ->brandName('Olimem O-Billing')
             ->login()
             ->registration()
+            ->databaseNotifications() // worker reports queued Sage operation outcomes here
+            ->databaseNotificationsPolling('15s')
             ->colors([
                 'primary' => Color::Emerald, // green accent on a white (light) theme
                 'gray' => Color::Slate,
