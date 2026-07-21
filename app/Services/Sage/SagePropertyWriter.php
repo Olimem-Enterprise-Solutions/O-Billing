@@ -321,6 +321,17 @@ final class SagePropertyWriter
             'Physical1' => $customer->address,
             'Telephone' => $customer->phone,
             'EMail' => $customer->email,
+            // Start the running balances at zero like every Evolution-created
+            // debtor. Left NULL, a later "DCBalance = DCBalance + amount" posting
+            // evaluates to NULL (NULL + x = NULL) and the customer balance/statement
+            // never reflects the invoice.
+            'DCBalance' => 0.0,
+            'fForeignBalance' => 0.0,
+            // Numeric account settings Evolution stores as 0, not NULL.
+            'Credit_Limit' => 0.0,
+            'Interest_Rate' => 0.0,
+            'Discount' => 0.0,
+            'AutoDisc' => 0.0,
             'iCurrencyID' => $currencyId,
             'iClassID' => $template->iClassID ?? null,
             'iSettlementTermsID' => $template->iSettlementTermsID ?? 0,

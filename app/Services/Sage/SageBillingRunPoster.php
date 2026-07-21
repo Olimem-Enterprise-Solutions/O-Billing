@@ -172,10 +172,14 @@ final class SageBillingRunPoster
             }
 
             foreach ([['_btblInvoiceLineDetails', $details], ['PostAR', $postAr], ['PostGL', $postGl]] as [$table, $rows]) {
-                // SQL Server allows at most 2,100 bound parameters per statement.
-                $chunkSize = max(1, intdiv(2000, count($rows[0])));
-                foreach (array_chunk($rows, $chunkSize) as $chunk) {
-                    $conn->table($table)->insert($chunk);
+                // Insert one row at a time. Any multi-row VALUES insert — even 20
+                // rows — requires a per-statement memory grant that this memory-
+                // starved SQL Express instance cannot satisfy, so it parks on
+                // RESOURCE_SEMAPHORE indefinitely (the symptom was "Post to Sage"
+                // spinning forever). Single-row inserts need no grant and always
+                // clear, exactly like the InvNum / _btblInvoiceLines headers above.
+                foreach ($rows as $row) {
+                    $conn->table($table)->insert($row);
                 }
             }
 
@@ -186,8 +190,11 @@ final class SageBillingRunPoster
             // Running client balances (home + foreign), as Evolution maintains them.
             foreach ($clientDeltas as $dclink => $delta) {
                 $conn->table('Client')->where('DCLink', $dclink)->update([
-                    'DCBalance' => DB::raw('DCBalance + '.sprintf('%.2F', $delta['home'])),
-                    'fForeignBalance' => DB::raw('fForeignBalance + '.sprintf('%.2F', $delta['usd'])),
+                    // ISNULL guards accounts whose balance was left NULL (e.g. debtors
+                    // created outside Evolution): NULL + amount is NULL, which would
+                    // silently drop the running balance for the whole invoice.
+                    'DCBalance' => DB::raw('ISNULL(DCBalance, 0) + '.sprintf('%.2F', $delta['home'])),
+                    'fForeignBalance' => DB::raw('ISNULL(fForeignBalance, 0) + '.sprintf('%.2F', $delta['usd'])),
                     'dTimeStamp' => $now,
                 ]);
             }
@@ -257,9 +264,17 @@ final class SageBillingRunPoster
             throw new \RuntimeException("Sage accounting period {$period->idPeriod} ({$txDate}) is blocked for posting.");
         }
 
-        $rate = (float) ($conn->table('CurrencyHist')
-            ->where('iCurrencyID', $cfg['currency_id'])
-            ->orderByDesc('dRateDate')->value('fSellRate') ?? 1.0);
+        // Latest sell rate for the invoice currency. A correlated MAX() subquery
+        // is used deliberately instead of ORDER BY dRateDate DESC: under pdo_sqlsrv
+        // the ORDER BY form compiles to a pathological plan that stalls ~10s on this
+        // server, while the MAX form seeks in a few ms.
+        $rate = (float) ($conn->selectOne(
+            'SELECT fSellRate FROM CurrencyHist
+             WHERE iCurrencyID = ? AND dRateDate = (
+                 SELECT MAX(dRateDate) FROM CurrencyHist WHERE iCurrencyID = ?
+             )',
+            [$cfg['currency_id'], $cfg['currency_id']],
+        )?->fSellRate ?? 1.0);
 
         $taxRates = $conn->table('TaxRate')->pluck('TaxRate', 'idTaxRate');
 
@@ -269,13 +284,30 @@ final class SageBillingRunPoster
             ->get()->keyBy('IdCliClass');
 
         // The Sage service item billed per class → revenue account via its group.
+        // These three tables are tiny (≈900/900/70 rows), but a server-side JOIN
+        // filtered by WHERE Code IN (…) compiles to a scan that stalls ~10-17s per
+        // call under pdo_sqlsrv — a parameter-sniffing pathology that neither
+        // OPTION (RECOMPILE) nor ARITHABORT reliably cures. Fetching each table with
+        // a plain, parameter-free SELECT (consistently a few ms) and joining in PHP
+        // sidesteps it entirely.
+        $wanted = array_flip(array_values(array_unique($cfg['class_items'])));
+        $stockDetails = $conn->table('_etblStockDetails')->select('StockID', 'GroupID')->get()->keyBy('StockID');
+        $groups = $conn->table('GrpTbl')->select('idGrpTbl', 'SalesAccLink')->get()->keyBy('idGrpTbl');
+        $itemRows = [];
+        foreach ($conn->table('StkItem')->select('StockLink', 'Code', 'Description_1')->get() as $s) {
+            if (! isset($wanted[$s->Code])) {
+                continue;
+            }
+            $detail = $stockDetails[$s->StockLink] ?? null;
+            $group = $detail !== null ? ($groups[$detail->GroupID] ?? null) : null;
+            $itemRows[$s->Code] = (object) [
+                'StockLink' => $s->StockLink,
+                'Code' => $s->Code,
+                'Description_1' => $s->Description_1,
+                'SalesAccLink' => $group->SalesAccLink ?? 0,
+            ];
+        }
         $items = [];
-        $itemRows = $conn->table('StkItem as s')
-            ->join('_etblStockDetails as d', 'd.StockID', '=', 's.StockLink')
-            ->join('GrpTbl as g', 'g.idGrpTbl', '=', 'd.GroupID')
-            ->whereIn('s.Code', array_values(array_unique($cfg['class_items'])))
-            ->select('s.StockLink', 's.Code', 's.Description_1', 'g.SalesAccLink')
-            ->get()->keyBy('Code');
         foreach ($cfg['class_items'] as $classId => $itemCode) {
             $items[$classId] = $itemRows[$itemCode] ?? null;
         }

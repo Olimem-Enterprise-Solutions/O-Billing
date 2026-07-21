@@ -132,6 +132,13 @@ return [
             'prefix_indexes' => true,
             'encrypt' => env('SAGE_DB_ENCRYPT', 'no'),
             'trust_server_certificate' => env('SAGE_DB_TRUSTED', true),
+            // Safety net: never let a single statement hang forever (e.g. a query
+            // parked on a memory grant against a starved SQL Express box). Abort
+            // after this many seconds so the app surfaces an error instead of the
+            // UI spinning indefinitely. 0 = no limit.
+            'options' => [
+                \PDO::SQLSRV_ATTR_QUERY_TIMEOUT => (int) env('SAGE_DB_QUERY_TIMEOUT', 120),
+            ],
         ],
 
         /*
@@ -152,6 +159,9 @@ return [
             'prefix_indexes' => true,
             'encrypt' => env('SAGE_DB_ENCRYPT', 'no'),
             'trust_server_certificate' => env('SAGE_DB_TRUSTED', true),
+            'options' => [
+                \PDO::SQLSRV_ATTR_QUERY_TIMEOUT => (int) env('SAGE_DB_QUERY_TIMEOUT', 120),
+            ],
         ],
 
     ],
