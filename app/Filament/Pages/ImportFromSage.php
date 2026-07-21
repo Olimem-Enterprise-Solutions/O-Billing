@@ -4,32 +4,35 @@ declare(strict_types=1);
 
 namespace App\Filament\Pages;
 
+use App\Jobs\Sage\ImportLedger;
+use App\Jobs\Sage\ImportProperties;
+use App\Jobs\Sage\ImportTariffs;
 use App\Models\Area;
 use App\Models\BillingRun;
 use App\Models\Customer;
 use App\Models\Service;
 use App\Models\ServiceType;
 use App\Models\Tariff;
-use App\Services\Sage\SageImportService;
+use App\Support\Sage\SageBridge;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Support\Icons\Heroicon;
-use Throwable;
 use UnitEnum;
 
 /**
- * One-click importer: pulls the master data from the live Sage Evolution
- * database into O-Billing's own tables (areas, properties, customers, services,
- * tariffs, billing runs) so it appears in the normal Billing screens. Idempotent
- * — re-run any time to refresh.
+ * Queues master-data imports from the council's Sage database, run by the
+ * on-site worker (the cloud app has no Sage connection). Pick the import that
+ * matches the council's Sage setup: "ratepayers (ledger)" for debtors-ledger
+ * companies (e.g. Gokwe/Binga), or "master data (property module)" for
+ * property-module companies. Idempotent — re-run any time to refresh.
  */
 class ImportFromSage extends Page
 {
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedArrowDownTray;
 
-    protected static string|UnitEnum|null $navigationGroup = 'Sage (Live)';
+    protected static string|UnitEnum|null $navigationGroup = 'Sage';
 
     protected static ?int $navigationSort = 0;
 
@@ -55,42 +58,47 @@ class ImportFromSage extends Page
     protected function getHeaderActions(): array
     {
         return [
-            Action::make('import')
-                ->label('Run import now')
-                ->icon(Heroicon::OutlinedArrowPath)
-                ->requiresConfirmation()
-                ->modalHeading('Import from Sage')
-                ->modalDescription('Reads the live Sage database and refreshes O-Billing\'s areas, properties, customers, services, tariffs and billing runs. This can take a minute for a large database.')
-                ->modalSubmitActionLabel('Import')
-                ->action(function (SageImportService $service): void {
-                    try {
-                        $result = $service->run();
-                    } catch (Throwable $e) {
-                        Notification::make()
-                            ->danger()
-                            ->title('Import failed')
-                            ->body($e->getMessage())
-                            ->persistent()
-                            ->send();
-
-                        return;
-                    }
-
-                    $summary = collect($result['counts'])
-                        ->map(fn ($v, $k) => (string) str($k)->headline().': '.number_format($v))
-                        ->implode(' · ');
-
-                    Notification::make()
-                        ->success()
-                        ->title("Imported into {$result['municipality']}")
-                        ->body($summary)
-                        ->persistent()
-                        ->send();
-
-                    foreach ($result['warnings'] as $warning) {
-                        Notification::make()->warning()->title('Note')->body($warning)->persistent()->send();
-                    }
-                }),
+            $this->queueAction(
+                'importLedger',
+                'Import ratepayers (ledger)',
+                'Queues an import of ratepayers (debtor accounts → customers and services) from the Sage debtor ledger. For debtors-ledger councils (e.g. Gokwe/Binga).',
+                'import_ledger',
+                ImportLedger::class,
+            ),
+            $this->queueAction(
+                'importProperties',
+                'Import master data (property module)',
+                'Queues an import of areas, properties, customers, services, tariffs and billing runs from the Sage property module. For property-module councils.',
+                'import_properties',
+                ImportProperties::class,
+            ),
+            $this->queueAction(
+                'importTariffs',
+                'Price tariffs',
+                'Queues pricing of the recurring services (assessment rates, development levies) and attaches a ward tariff to every affected property. Run after a ledger import.',
+                'import_tariffs',
+                ImportTariffs::class,
+            )->icon(Heroicon::OutlinedCurrencyDollar),
         ];
+    }
+
+    private function queueAction(string $name, string $label, string $description, string $type, string $job): Action
+    {
+        return Action::make($name)
+            ->label($label)
+            ->icon(Heroicon::OutlinedArrowPath)
+            ->requiresConfirmation()
+            ->modalHeading($label)
+            ->modalDescription($description)
+            ->modalSubmitActionLabel('Queue import')
+            ->action(function () use ($type, $job): void {
+                SageBridge::queue($type, $job);
+
+                Notification::make()
+                    ->success()
+                    ->title('Import queued')
+                    ->body('The import has been queued and will run on the on-site worker. Watch progress under Sage → Sage Operations.')
+                    ->send();
+            });
     }
 }
