@@ -19,7 +19,18 @@ class BillingScheduleForm
 {
     public static function configure(Schema $schema): Schema
     {
-        return $schema->components([
+        return $schema->components(self::components());
+    }
+
+    /**
+     * The schedule form components, reusable outside the resource form (e.g. the
+     * "New schedule" modal action on the Billing Runs page).
+     *
+     * @return array<int, \Filament\Schemas\Components\Component>
+     */
+    public static function components(): array
+    {
+        return [
             Section::make('Schedule')
                 ->columns(2)
                 ->schema([
@@ -96,6 +107,6 @@ class BillingScheduleForm
                     Select::make('area_to_id')->label('To location')
                         ->options(fn () => BillingScopeOptions::locations())->searchable(),
                 ]),
-        ]);
+        ];
     }
 }
