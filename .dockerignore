@@ -1,0 +1,13 @@
+.git
+.github
+.claude
+node_modules
+vendor
+.env
+.env.*
+database/database.sqlite
+storage/logs/*.log
+public/build
+tests
+docs
+*.md
