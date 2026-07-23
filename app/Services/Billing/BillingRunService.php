@@ -96,23 +96,55 @@ final class BillingRunService
             // re-run clear above, so this run's old numbers are free to reuse).
             $sequence = $this->highestInvoiceSequence($municipality->id);
 
+            // Batched inserts: creating thousands of invoices row by row takes
+            // minutes of round-trips against a remote database and blows the
+            // web request's execution limit. Insert invoices in chunks, map
+            // their ids back by invoice number, then insert all lines.
+            $now = now();
+            $invoiceRows = [];
+            $linesByNumber = [];
             foreach ($calc['invoices'] as $projected) {
                 $sequence++;
+                $number = $this->invoiceNumber($period, $sequence);
 
-                $invoice = $run->invoices()->create([
+                $invoiceRows[] = [
                     'municipality_id' => $municipality->id,
+                    'billing_run_id' => $run->id,
                     'customer_id' => $projected['customer_id'],
-                    'invoice_number' => $this->invoiceNumber($period, $sequence),
-                    'period_month' => $period,
+                    'invoice_number' => $number,
+                    'period_month' => $period->toDateString(),
                     'currency' => $projected['currency'],
                     'subtotal' => $projected['subtotal'],
                     'tax_total' => $projected['tax_total'],
                     'total' => $projected['total'],
                     'status' => 'issued',
-                    'issued_at' => now(),
-                ]);
+                    'issued_at' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+                $linesByNumber[$number] = $projected['lines'];
+            }
 
-                $invoice->lines()->createMany($projected['lines']);
+            foreach (array_chunk($invoiceRows, 500) as $chunk) {
+                DB::table('invoices')->insert($chunk);
+            }
+
+            $idByNumber = DB::table('invoices')
+                ->where('billing_run_id', $run->id)
+                ->pluck('id', 'invoice_number');
+
+            $lineRows = [];
+            foreach ($linesByNumber as $number => $lines) {
+                foreach ($lines as $line) {
+                    $lineRows[] = $line + [
+                        'invoice_id' => $idByNumber[$number],
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+            }
+            foreach (array_chunk($lineRows, 500) as $chunk) {
+                DB::table('invoice_lines')->insert($chunk);
             }
 
             $run->forceFill([

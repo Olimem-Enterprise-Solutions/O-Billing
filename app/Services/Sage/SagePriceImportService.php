@@ -454,11 +454,23 @@ final class SagePriceImportService
         if (! $dryRun) {
             DB::transaction(function () use ($amounts, $stats): void {
                 $now = now();
+
+                // Batched upsert on the (customer_id, service_id) unique key —
+                // thousands of per-row updateOrInsert round-trips are painfully
+                // slow against a remote database.
+                $rows = [];
                 foreach ($amounts as $key => $amount) {
                     [$customerId, $serviceId] = array_map('intval', explode('|', $key));
-                    DB::table('customer_service')->updateOrInsert(
-                        ['customer_id' => $customerId, 'service_id' => $serviceId],
-                        ['amount' => round($amount, 2), 'updated_at' => $now, 'created_at' => $now],
+                    $rows[] = [
+                        'customer_id' => $customerId, 'service_id' => $serviceId,
+                        'amount' => round($amount, 2), 'created_at' => $now, 'updated_at' => $now,
+                    ];
+                }
+                foreach (array_chunk($rows, 500) as $chunk) {
+                    DB::table('customer_service')->upsert(
+                        $chunk,
+                        ['customer_id', 'service_id'],
+                        ['amount', 'updated_at'],
                     );
                 }
 
