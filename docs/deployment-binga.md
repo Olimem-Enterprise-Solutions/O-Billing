@@ -112,6 +112,13 @@ php artisan queue:work --queue=default --tries=3 --timeout=120
 ```
 This drains **non-Sage** jobs only. **It must never listen on `sage`.**
 
+**Any worker that runs `sage` jobs must set `DB_QUEUE_RETRY_AFTER=14400`.**
+The database queue re-reserves a job after `retry_after` seconds (default 90);
+posting a full billing run or importing the ledger legitimately runs for many
+minutes, so with the default the queue declares the job dead mid-flight and
+`--tries=1` sends it to `failed_jobs` while nothing is wrong. 14400 (4 h)
+comfortably exceeds the longest Sage job.
+
 ### A6. Scheduler (recurring billing schedules)
 Add a third Railway service from the same image with start command:
 ```
