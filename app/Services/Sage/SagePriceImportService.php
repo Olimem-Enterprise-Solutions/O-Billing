@@ -69,24 +69,61 @@ final class SagePriceImportService
     /**
      * The two taxonomies spell the same concept differently (class
      * "REF-COMM-TWN" vs billable "Refuse collection-Businesss areas").
-     * Map every spelling to one canonical token before scoring.
+     * Map every spelling to one canonical token (or several) before scoring.
      */
     private const SYNONYMS = [
         'assesment' => 'ASS', 'assessnt' => 'ASS', 'assessment' => 'ASS', 'assmnt' => 'ASS', 'ass' => 'ASS',
         'residential' => 'RES', 'reside' => 'RES', 'res' => 'RES',
         'medium' => 'MED', 'med' => 'MED',
         'high' => 'HIGH', 'low' => 'LOW',
-        'commercial' => 'BIZ', 'comm' => 'BIZ', 'business' => 'BIZ', 'businesss' => 'BIZ', 'dealer' => 'BIZ', 'dea' => 'BIZ',
+        'commercial' => 'BIZ', 'comm' => 'BIZ', 'business' => 'BIZ', 'businesss' => 'BIZ',
+        // Business-category classes carry their own token (to outscore other
+        // licence variants) plus BIZ, so families that only have a generic
+        // Commercial variant (e.g. the land development levy) still land on it.
+        'dealer' => ['DEALER', 'BIZ'], 'dea' => ['DEALER', 'BIZ'],
+        'tuckshop' => ['TUCKSHOP', 'BIZ'], 'shp' => ['TUCKSHOP', 'BIZ'],
+        'butchery' => ['BUTCHERY', 'BIZ'], 'but' => ['BUTCHERY', 'BIZ'],
+        'hardware' => ['HARDWARE', 'BIZ'], 'ware' => ['HARDWARE', 'BIZ'],
+        'kitchen' => ['KITCHEN', 'BIZ'], 'kitch' => ['KITCHEN', 'BIZ'],
+        'cabin' => ['CABIN', 'BIZ'], 'cabn' => ['CABIN', 'BIZ'],
+        'flea' => ['FLEA', 'BIZ'], 'mkt' => ['MARKET'], 'market' => ['MARKET'],
+        'grinding' => ['GRIND', 'BIZ'], 'mill' => ['GRIND', 'BIZ'],
+        // Tourism accommodation: hotels/lodges/chalets fall under the Tourism band.
+        'hotel' => ['HOTEL', 'TOURISM'], 'hotels' => ['HOTEL', 'TOURISM'],
+        'lodge' => ['LODGE', 'TOURISM'], 'lodges' => ['LODGE', 'TOURISM'], 'lodg' => ['LODGE', 'TOURISM'],
+        'charlet' => ['CHALET', 'TOURISM'], 'chalet' => ['CHALET', 'TOURISM'],
+        'tourism' => 'TOURISM',
+        'liquour' => 'LIQUOR', 'liquor' => 'LIQUOR', 'bar' => 'LIQUOR', 'bottlestore' => 'LIQUOR',
         'communal' => 'RURAL', 'rural' => 'RURAL', 'rur' => 'RURAL',
         'urban' => 'URBAN', 'town' => 'URBAN', 'twn' => 'URBAN',
-        'stateland' => 'STATE',
+        'stateland' => 'STATE', 'state' => 'STATE',
+        'station' => 'STATION', 'stat' => 'STATION',
         'institutions' => 'INST', 'institution' => 'INST', 'inst' => 'INST',
         'church' => 'CHURCH', 'churches' => 'CHURCH', 'chrc' => 'CHURCH',
-        'lodge' => 'LODGE', 'lodges' => 'LODGE', 'lodg' => 'LODGE',
         'industrial' => 'IND', 'ind' => 'IND',
         'licence' => 'LIC', 'licences' => 'LIC', 'lic' => 'LIC',
         'refuse' => 'REF', 'ref' => 'REF',
         'sewer' => 'SEW', 'sewerage' => 'SEW', 'sewarage' => 'SEW', 'sew' => 'SEW',
+        'development' => 'DEV', 'develoment' => 'DEV', 'dev' => 'DEV',
+    ];
+
+    /**
+     * Scoring weights: category words identify the variant (2); location words
+     * qualify it (1); family-generic words appear on every item of the family
+     * and carry no signal (0). A match needs a total of at least 2, so a
+     * location word alone can never pick a price.
+     */
+    private const LOCATION_TOKENS = ['URBAN', 'RURAL', 'STATE', 'RES'];
+
+    private const GENERIC_TOKENS = ['ASS', 'REF', 'SEW', 'LIC', 'LEA', 'LDL', 'PTX', 'DEV', 'LAND', 'LEVY', 'LEASE', 'TAX', 'RENT'];
+
+    /**
+     * Explicit class → billable pins for the few cases word-matching cannot
+     * decide (e.g. "Sewer-Residential" only shares the weight-1 word
+     * "Residential" with its billable). Checked before any other strategy.
+     */
+    private const CLASS_ITEM_OVERRIDES = [
+        'SEWER-RES-HIGH-P2SP1' => 'P2SP1-SEW002',
     ];
 
     private int $municipalityId;
@@ -117,9 +154,24 @@ final class SagePriceImportService
 
             $perToken = $this->priceSubscriptions($dryRun);
 
+            $matches = [];
+            foreach ($classes as $class) {
+                $code = strtoupper(trim((string) $class->Code));
+                if (isset($this->classPrices[$code])) {
+                    $matches[] = [
+                        'class' => $code,
+                        'class_desc' => trim((string) $class->Description),
+                        'item' => $this->classPrices[$code]['item'],
+                        'price' => $this->classPrices[$code]['price'],
+                        'via' => $this->classPrices[$code]['via'],
+                    ];
+                }
+            }
+
             return [
                 'municipality' => $muni->name,
                 'lines' => $perToken,
+                'matches' => $matches,
                 'unmatched' => $this->unmatchedClasses,
                 'warnings' => $this->warnings,
                 'dry_run' => $dryRun,
@@ -195,7 +247,16 @@ final class SagePriceImportService
                 continue;
             }
 
-            // 1. The class code IS a billable item code (the lease taxonomy).
+            // 1. Hand-pinned overrides for classes word-matching cannot decide.
+            $pinned = self::CLASS_ITEM_OVERRIDES[$code] ?? null;
+            if ($pinned !== null && isset($byCode[strtoupper($pinned)]) && $byCode[strtoupper($pinned)]['price'] > 0) {
+                $item = $byCode[strtoupper($pinned)];
+                $this->classPrices[$code] = ['price' => $item['price'], 'via' => 'pinned', 'item' => $item['code']];
+
+                continue;
+            }
+
+            // 2. The class code IS a billable item code (the lease taxonomy).
             $exact = $byCode[$code] ?? null;
             if ($exact !== null && $exact['price'] > 0) {
                 $this->classPrices[$code] = ['price' => $exact['price'], 'via' => 'exact', 'item' => $exact['code']];
@@ -203,7 +264,7 @@ final class SagePriceImportService
                 continue;
             }
 
-            // 2. Same service family, best description-word overlap.
+            // 3. Same service family, best weighted description-word overlap.
             $match = $this->bestDescriptionMatch($class, $items);
             if ($match !== null) {
                 $this->classPrices[$code] = $match;
@@ -247,7 +308,12 @@ final class SagePriceImportService
                 continue;
             }
 
-            $score = count(array_intersect($classWords, $this->significantWords($item['code'].' '.$item['desc'])));
+            $shared = array_intersect($classWords, $this->significantWords($item['code'].' '.$item['desc']));
+            $score = array_sum(array_map(fn (string $token) => match (true) {
+                in_array($token, self::GENERIC_TOKENS, true) => 0,
+                in_array($token, self::LOCATION_TOKENS, true) => 1,
+                default => 2,
+            }, $shared));
 
             // Ties: take the LOWER price — the conservative choice when the data
             // cannot distinguish variants (e.g. communal vs stateland rates, or
@@ -298,7 +364,9 @@ final class SagePriceImportService
         $words = [];
         foreach (preg_split('/[^a-z0-9]+/', $stripped) ?: [] as $word) {
             if (isset(self::SYNONYMS[$word])) {
-                $words[] = self::SYNONYMS[$word];
+                foreach ((array) self::SYNONYMS[$word] as $canonical) {
+                    $words[] = $canonical;
+                }
 
                 continue;
             }
@@ -306,7 +374,9 @@ final class SagePriceImportService
                 continue;
             }
 
-            $words[] = substr($word, 0, 4);
+            // Uppercased like the canonical tokens, so the weight lists
+            // (GENERIC_TOKENS/LOCATION_TOKENS) compare reliably.
+            $words[] = strtoupper(substr($word, 0, 4));
         }
 
         return array_values(array_unique($words));

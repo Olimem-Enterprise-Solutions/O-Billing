@@ -10,7 +10,9 @@ use Throwable;
 
 class SagePriceImport extends Command
 {
-    protected $signature = 'sage:import-prices {--dry-run : Resolve and report prices without writing anything}';
+    protected $signature = 'sage:import-prices
+        {--dry-run : Resolve and report prices without writing anything}
+        {--matches : Also list every client class → billable resolution for review}';
 
     protected $description = 'Price every ratepayer service from the Sage billables (inventory price list), using each debtor\'s client class to pick the rate variant';
 
@@ -41,6 +43,17 @@ class SagePriceImport extends Command
                 $l['avg'] !== null ? number_format($l['avg'], 2) : '—',
             ])->all(),
         );
+
+        if ($this->option('matches')) {
+            $this->newLine();
+            $this->info('Class → billable resolutions:');
+            $this->table(
+                ['Class', 'Class description', 'Billable', 'Price', 'Via'],
+                collect($result['matches'])->map(fn ($m) => [
+                    $m['class'], $m['class_desc'], $m['item'], number_format($m['price'], 2), $m['via'],
+                ])->all(),
+            );
+        }
 
         if ($result['unmatched'] !== []) {
             $this->newLine();
