@@ -84,8 +84,10 @@ final class BillingRunService
                 }
             }
 
-            // Clear any prior invoices for an idempotent re-run.
-            $run->invoices()->each(fn (Invoice $i) => $i->delete());
+            // Clear any prior invoices for an idempotent re-run. A single bulk
+            // DELETE (lines fall to the FK cascade): iterating with each() while
+            // deleting shifts the chunk pagination and silently skips rows.
+            $run->invoices()->delete();
 
             $calc = $this->calculate($run);
 
@@ -153,7 +155,8 @@ final class BillingRunService
                 );
             }
 
-            $run->invoices()->each(fn (Invoice $i) => $i->delete());
+            // Bulk DELETE — see generate()'s clear for why not each()->delete().
+            $run->invoices()->delete();
 
             $run->forceFill([
                 'status' => 'reversed',

@@ -176,6 +176,37 @@ class BillingRunSafetyTest extends TestCase
         });
     }
 
+    public function test_reversal_deletes_every_invoice_even_beyond_the_chunk_size(): void
+    {
+        $this->setUpBilling(function (): void {
+            $billing = app(BillingRunService::class);
+            $run = $this->makeRun();
+            $billing->generate($run);
+
+            // Grow the run past Eloquent's 1,000-row chunk size: iterating in
+            // chunks while deleting shifted the pagination and silently left
+            // about a third of the invoices behind.
+            $customerId = Customer::query()->value('id');
+            $rows = [];
+            for ($i = 0; $i < 1500; $i++) {
+                $rows[] = [
+                    'municipality_id' => $this->municipality->id, 'billing_run_id' => $run->id,
+                    'customer_id' => $customerId, 'invoice_number' => 'BULK-'.$i,
+                    'period_month' => now()->startOfMonth()->toDateString(), 'currency' => 'ZAR',
+                    'subtotal' => 1, 'tax_total' => 0, 'total' => 1, 'status' => 'issued',
+                    'created_at' => now(), 'updated_at' => now(),
+                ];
+            }
+            foreach (array_chunk($rows, 500) as $chunk) {
+                \Illuminate\Support\Facades\DB::table('invoices')->insert($chunk);
+            }
+            $this->assertSame(1502, Invoice::count());
+
+            $billing->reverse($run, 'chunk regression');
+            $this->assertSame(0, Invoice::count());
+        });
+    }
+
     public function test_a_run_in_sage_can_be_neither_reversed_nor_re_run(): void
     {
         $this->setUpBilling(function (): void {
