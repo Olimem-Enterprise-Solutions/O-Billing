@@ -68,7 +68,11 @@ class UserResource extends Resource
                         ? 'Leave blank to keep the current password.'
                         : 'Share this with the user; they can change it later.'),
                 CheckboxList::make('municipalities')
-                    ->relationship('municipalities', 'name')
+                    // Select only id/name: Filament adds DISTINCT to this query,
+                    // and Postgres cannot DISTINCT the whole row because the
+                    // json `supported_currencies` column has no equality operator.
+                    ->relationship('municipalities', 'name', modifyQueryUsing: fn ($query) => $query
+                        ->select('municipalities.id', 'municipalities.name'))
                     ->default(fn () => array_filter([Filament::getTenant()?->getKey()]))
                     ->required()
                     ->helperText('The user can only sign in to the municipalities ticked here.'),

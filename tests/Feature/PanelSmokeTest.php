@@ -51,6 +51,33 @@ class PanelSmokeTest extends TestCase
         $this->get("{$base}/users")->assertSuccessful();
     }
 
+    public function test_admin_can_edit_a_user_from_the_users_page(): void
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $municipality = Municipality::create([
+            'name' => 'Smoke City',
+            'base_currency' => 'ZAR',
+            // json column: the municipalities checkbox list must not DISTINCT it
+            'supported_currencies' => ['ZAR', 'USD'],
+        ]);
+        $admin->municipalities()->attach($municipality);
+        $other = User::factory()->create();
+        $other->municipalities()->attach($municipality);
+
+        $this->actingAs($admin);
+        \Filament\Facades\Filament::setCurrentPanel('admin');
+        \Filament\Facades\Filament::setTenant($municipality);
+
+        \Livewire\Livewire::test(\App\Filament\Resources\Users\Pages\ManageUsers::class)
+            ->callAction(
+                \Filament\Actions\Testing\TestAction::make('edit')->table($other),
+                ['name' => 'Renamed Person'],
+            )
+            ->assertHasNoErrors();
+
+        $this->assertSame('Renamed Person', $other->fresh()->name);
+    }
+
     public function test_non_admin_cannot_access_the_users_page(): void
     {
         $user = User::factory()->create(); // is_admin defaults to false
