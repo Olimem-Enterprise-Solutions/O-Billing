@@ -140,87 +140,104 @@ final class SageBillingRunPoster
         $firstInv = null;
         $lastInv = null;
 
-        foreach ($byInvoice as $obNumber => $docs) {
-            if (isset($alreadyPosted[(string) $obNumber])) {
-                $skipped++;
+        // Post a batch of invoices per transaction: short enough to survive a
+        // flaky tunnel (tens of seconds), but amortising the commit/lock
+        // round-trips that make per-invoice transactions crawl. A dropped batch
+        // rolls back whole and re-posts on resume; committed batches are skipped.
+        $batchSize = max(1, (int) env('SAGE_POST_BATCH', 100));
 
-                continue;
-            }
-
-            $conn->transaction(function () use (&$posted, &$firstInv, &$lastInv, $conn, $obNumber, $docs, $auditFloor): void {
-                // Reserve this invoice's numbers under lock (released on commit),
-                // so concurrent Evolution users never get the same number and a
-                // failed invoice burns none of them (numbering stays gapless).
+        foreach (array_chunk(array_keys($byInvoice), $batchSize) as $batch) {
+            $conn->transaction(function () use (
+                &$posted, &$skipped, &$firstInv, &$lastInv,
+                $conn, $byInvoice, $batch, $alreadyPosted, $auditFloor,
+            ): void {
+                // Reserve numbers under lock (released on commit), so concurrent
+                // Evolution users never get the same number and a failed batch
+                // burns none of them (numbering stays gapless).
                 $stdf = $conn->selectOne('SELECT idStDfTbl, InvPref, InvNum, InvPad FROM StDfTbl WITH (UPDLOCK) ORDER BY idStDfTbl');
                 $entity = $conn->selectOne('SELECT TOP 1 iNextAuditNumber FROM Entities WITH (UPDLOCK)');
-
-                // Race-safety: another poster may have committed this invoice
-                // between the pre-check above and acquiring the lock here.
-                if ($conn->table('InvNum')->where('ExtOrderNum', $obNumber)->exists()) {
-                    return;
-                }
 
                 $seq = (int) $stdf->InvNum;
                 $audit = max((int) $entity->iNextAuditNumber, $auditFloor) + 1;
                 $now = now()->format('Y-m-d H:i:s');
 
-                $lineFirst = null;
-                $lineLast = null;
                 $auditNumbers = [];
                 $clientDeltas = [];
+                $wrote = 0;
 
-                foreach ($docs as $doc) {
-                    do {
-                        $invNumber = $stdf->InvPref.str_pad((string) $seq++, (int) $stdf->InvPad, '0', STR_PAD_LEFT);
-                    } while ($conn->table('InvNum')->where('InvNumber', $invNumber)->exists());
-                    $lineFirst ??= $invNumber;
-                    $lineLast = $invNumber;
-                    $auditNumber = $audit++.'.0001';
-                    $auditNumbers[] = $auditNumber;
+                foreach ($batch as $obNumber) {
+                    if (isset($alreadyPosted[(string) $obNumber])) {
+                        $skipped++;
 
-                    $header = $doc['header'];
-                    $header['InvNumber'] = $invNumber;
-                    $docId = (int) $conn->table('InvNum')->insertGetId($header, 'AutoIndex');
+                        continue;
+                    }
+                    // Race-safety: another poster may have committed this invoice
+                    // between the pre-check and this lock.
+                    if ($conn->table('InvNum')->where('ExtOrderNum', $obNumber)->exists()) {
+                        $skipped++;
 
-                    $line = $doc['line'];
-                    $line['iInvoiceID'] = $docId;
-                    $lineId = (int) $conn->table('_btblInvoiceLines')->insertGetId($line, 'idInvoiceLines');
-
-                    // Single-row inserts throughout. Any multi-row VALUES insert —
-                    // even 20 rows — needs a per-statement memory grant this
-                    // memory-starved SQL Express cannot satisfy, so it parks on
-                    // RESOURCE_SEMAPHORE forever; single rows need no grant.
-                    $conn->table('_btblInvoiceLineDetails')->insert([
-                        'iLDInvoiceID' => $docId, 'iLDInvoiceLineID' => $lineId, 'iLDInvoiceLineMatrixID' => 1,
-                        'bMatrixEntry' => 0, 'iLotID' => 0, 'cLotNumber' => '', 'iStockBinLocationID' => 0,
-                        'iUnitsOfMeasureID' => 0, 'iAttributeGroupID' => 0,
-                        'fldQty' => 1, 'fldQtyToProcess' => 0, 'fldQtyReserved' => 0,
-                        'fldQtyLastProcess' => 1, 'fldQtyProcessed' => 1,
-                        '_btblInvoiceLineDetails_iBranchID' => 0,
-                    ]);
-
-                    $ar = $doc['post_ar'];
-                    $ar['Reference'] = $invNumber;
-                    $ar['cAuditNumber'] = $auditNumber;
-                    $ar['InvNumKey'] = $docId;
-                    $ar['DTStamp'] = $now;
-                    $conn->table('PostAR')->insert($ar);
-
-                    foreach ($doc['post_gl'] as $gl) {
-                        $gl['Reference'] = $invNumber;
-                        $gl['cAuditNumber'] = $auditNumber;
-                        $gl['DTStamp'] = $now;
-                        $conn->table('PostGL')->insert($gl);
+                        continue;
                     }
 
-                    $d = &$clientDeltas[$doc['dclink']];
-                    $d ??= ['home' => 0.0, 'usd' => 0.0];
-                    $d['home'] = round($d['home'] + $doc['incl_home'], 2);
-                    $d['usd'] = round($d['usd'] + $doc['incl_usd'], 2);
-                    unset($d);
+                    foreach ($byInvoice[$obNumber] as $doc) {
+                        do {
+                            $invNumber = $stdf->InvPref.str_pad((string) $seq++, (int) $stdf->InvPad, '0', STR_PAD_LEFT);
+                        } while ($conn->table('InvNum')->where('InvNumber', $invNumber)->exists());
+                        $firstInv ??= $invNumber;
+                        $lastInv = $invNumber;
+                        $auditNumber = $audit++.'.0001';
+                        $auditNumbers[] = $auditNumber;
+
+                        $header = $doc['header'];
+                        $header['InvNumber'] = $invNumber;
+                        $docId = (int) $conn->table('InvNum')->insertGetId($header, 'AutoIndex');
+
+                        $line = $doc['line'];
+                        $line['iInvoiceID'] = $docId;
+                        $lineId = (int) $conn->table('_btblInvoiceLines')->insertGetId($line, 'idInvoiceLines');
+
+                        // Single-row inserts throughout. Any multi-row VALUES insert
+                        // — even 20 rows — needs a per-statement memory grant this
+                        // memory-starved SQL Express cannot satisfy, so it parks on
+                        // RESOURCE_SEMAPHORE forever; single rows need no grant.
+                        $conn->table('_btblInvoiceLineDetails')->insert([
+                            'iLDInvoiceID' => $docId, 'iLDInvoiceLineID' => $lineId, 'iLDInvoiceLineMatrixID' => 1,
+                            'bMatrixEntry' => 0, 'iLotID' => 0, 'cLotNumber' => '', 'iStockBinLocationID' => 0,
+                            'iUnitsOfMeasureID' => 0, 'iAttributeGroupID' => 0,
+                            'fldQty' => 1, 'fldQtyToProcess' => 0, 'fldQtyReserved' => 0,
+                            'fldQtyLastProcess' => 1, 'fldQtyProcessed' => 1,
+                            '_btblInvoiceLineDetails_iBranchID' => 0,
+                        ]);
+
+                        $ar = $doc['post_ar'];
+                        $ar['Reference'] = $invNumber;
+                        $ar['cAuditNumber'] = $auditNumber;
+                        $ar['InvNumKey'] = $docId;
+                        $ar['DTStamp'] = $now;
+                        $conn->table('PostAR')->insert($ar);
+
+                        foreach ($doc['post_gl'] as $gl) {
+                            $gl['Reference'] = $invNumber;
+                            $gl['cAuditNumber'] = $auditNumber;
+                            $gl['DTStamp'] = $now;
+                            $conn->table('PostGL')->insert($gl);
+                        }
+
+                        $d = &$clientDeltas[$doc['dclink']];
+                        $d ??= ['home' => 0.0, 'usd' => 0.0];
+                        $d['home'] = round($d['home'] + $doc['incl_home'], 2);
+                        $d['usd'] = round($d['usd'] + $doc['incl_usd'], 2);
+                        unset($d);
+
+                        $wrote++;
+                    }
                 }
 
-                // Advance the shared counters to what this invoice consumed.
+                if ($wrote === 0) {
+                    return; // whole batch already posted — nothing to advance
+                }
+
+                // Advance the shared counters to what this batch consumed.
                 $conn->table('StDfTbl')->where('idStDfTbl', $stdf->idStDfTbl)->update(['InvNum' => (string) $seq]);
                 $conn->table('Entities')->update(['iNextAuditNumber' => $audit - 1]);
 
@@ -236,21 +253,21 @@ final class SageBillingRunPoster
                     ]);
                 }
 
-                // This invoice's audit sets must balance to the cent, or its own
-                // transaction rolls back — the rest of the run stays intact.
-                $placeholders = implode(',', array_fill(0, count($auditNumbers), '?'));
-                $unbalanced = (int) $conn->selectOne(
-                    "SELECT COUNT(*) AS n FROM (SELECT cAuditNumber FROM PostGL WHERE cAuditNumber IN ({$placeholders}) "
-                    .'GROUP BY cAuditNumber HAVING ABS(SUM(Debit) - SUM(Credit)) > 0.005) x',
-                    $auditNumbers,
-                )->n;
-                if ($unbalanced > 0) {
-                    throw new \RuntimeException("Posting aborted for invoice {$obNumber}: {$unbalanced} audit set(s) did not balance — rolled back.");
+                // Every audit set in this batch must balance to the cent, or the
+                // whole batch rolls back — other batches stay intact.
+                foreach (array_chunk($auditNumbers, 500) as $chunk) {
+                    $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                    $unbalanced = (int) $conn->selectOne(
+                        "SELECT COUNT(*) AS n FROM (SELECT cAuditNumber FROM PostGL WHERE cAuditNumber IN ({$placeholders}) "
+                        .'GROUP BY cAuditNumber HAVING ABS(SUM(Debit) - SUM(Credit)) > 0.005) x',
+                        $chunk,
+                    )->n;
+                    if ($unbalanced > 0) {
+                        throw new \RuntimeException("Posting aborted: {$unbalanced} audit set(s) did not balance — batch rolled back.");
+                    }
                 }
 
-                $posted += count($docs);
-                $firstInv ??= $lineFirst;
-                $lastInv = $lineLast;
+                $posted += $wrote;
             });
         }
 
